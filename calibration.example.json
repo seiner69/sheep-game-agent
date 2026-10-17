@@ -1,0 +1,13 @@
+{
+  "window_title": "羊了个羊：星球",
+  "ready_for_input": false,
+  "frame_size": [371, 709],
+  "board_roi": [52, 140, 319, 487],
+  "tray_roi": [22, 556, 349, 607],
+  "minimum_score": 0.85,
+  "maximum_mae": 22,
+  "tray_scales": [1.2, 1.225, 1.25, 1.275, 1.3],
+  "rules": {"tray_capacity": 7, "match_size": 3},
+  "hidden_regions": [],
+  "tray_validation_status": "example only; validate your own interface and assets"
+}

@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+local/
+demo-output*/
+standalone_sessions/
+build/
+dist/
+*.spec
+*.exe
+*.zip
+.env
+.env.*
