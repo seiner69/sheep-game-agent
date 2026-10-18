@@ -46,6 +46,7 @@ class Runner:
         self.occlusion=OcclusionBeliefs()
         self.clicked=0;self.verified=0;self.explored=0;self.cleared=0;self.pending=None
         self.state=None;self.mutex=None;self.last_window_rect=None
+        self.board_scale=None
 
     def log(self,event,**data):
         entry={'time':datetime.now().isoformat(timespec='milliseconds'),'event':event,**data}
@@ -84,7 +85,14 @@ class Runner:
         return location
 
     def recognize(self,frame):
-        return observe(frame.image,self.config,self.template_dir)
+        state=observe(frame.image,self.config,self.template_dir,board_scale=self.board_scale)
+        if not state['tiles'] and self.board_scale is not None:
+            state=observe(frame.image,self.config,self.template_dir)
+        fitted=state['board_geometry']['template_scale']
+        if fitted is not None and fitted!=self.board_scale:
+            self.board_scale=fitted
+            self.log('board_scale_fitted',scale=fitted,open_tiles=len(state['tiles']))
+        return state
 
     def acquire_mutex(self):
         kernel=ctypes.WinDLL('kernel32',use_last_error=True)
@@ -128,7 +136,14 @@ class Runner:
                     self.log('recognition_incomplete',reason=reason,tray=state['tray'],
                              frame_path=str(folder/'recognition_issue.png'),state_path=str(folder/'before.json'))
                     break
-                hints=covered_hints(frame.image,self.config,self.templates,state['tiles']) if self.explore else []
+                if not state['tiles']:
+                    reason='未识别到可点击明牌：请检查当前画面、图案尺寸或模板是否适配；不能据此判断通关。'
+                    annotate(frame.image,state,folder/'recognition_issue.png')
+                    save_json(folder/'decision.json',{'status':'pause','reason_code':'board_unrecognized','reason':reason})
+                    self.log('recognition_incomplete',reason=reason,frame_path=str(folder/'recognition_issue.png'))
+                    break
+                scale=state.get('board_geometry',{}).get('template_scale') or 1.0
+                hints=covered_hints(frame.image,self.config,self.templates,state['tiles'],scale) if self.explore else []
                 belief=self.occlusion.infer(frame.image,state,hints,self.config)
                 save_json(folder/'occlusion_probabilities.json',belief)
                 plan=self.explorer.choose(state,hints,belief) if self.explore else search(state,time_limit=.35)

@@ -6,8 +6,23 @@ import numpy as np
 from exploration import overlap
 
 
-def face(center):
-    x,y=center;return (x-19,y-20,x+19,y+21)
+def face(center,scale=1.0):
+    x,y=center;return (x-19*scale,y-20*scale,x+19*scale,y+21*scale)
+
+
+def grid_starts(fronts,axis,lower,upper,scale):
+    """Estimate grid phase from visible centers, never a stored desktop origin."""
+    step=19*scale;half=(19 if axis==0 else 20)*scale
+    positions=np.array([t['click_point'][axis] for t in fronts])
+    if not len(positions):return []
+    phases=positions%step
+    def error(phase):
+        residual=np.abs((positions-phase+step/2)%step-step/2)
+        return float(np.minimum(residual,step/4).sum())
+    phase=min(phases,key=error)
+    start=phase-half
+    start+=math.ceil((lower-start)/step)*step
+    return sorted(set(round(v) for v in np.arange(start,upper,step)))
 
 
 def conservative_gain(belief,tile_id,pocket,visible):
@@ -23,7 +38,7 @@ def conservative_gain(belief,tile_id,pocket,visible):
     for value,node,effect in sorted(values,key=lambda v:-v[0]):
         # Nearby hypotheses may refer to the same face. Keeping only the best
         # local reward is deliberately conservative; this is not a tile count.
-        duplicate=any(np.linalg.norm(np.subtract(node['center'],n['center']))<27 for n in kept)
+        duplicate=any(np.linalg.norm(np.subtract(node['center'],n['center']))<27*(belief or {}).get('board_scale',1.0) for n in kept)
         evidence.append({'dark_node':node['id'],**effect,'used_in_utility':not duplicate})
         if not duplicate:kept.append(node)
     return sum(value for value,node,effect in values if node in kept),evidence
@@ -42,23 +57,26 @@ class OcclusionBeliefs:
         dark=np.linalg.norm(image.astype(float)-np.array([123,153,147]),axis=2)<23
         known=np.zeros((h,w),np.uint8)
         fronts=state['tiles']
+        scale=state.get('board_geometry',{}).get('template_scale') or 1.0
+        fw,fh=round(38*scale),round(41*scale)
         for tile in fronts:
-            x0,y0,x1,y1=map(round,face(tile['click_point']))
+            x0,y0,x1,y1=map(round,face(tile['click_point'],scale))
             known[max(0,y0):min(h,y1),max(0,x0):min(w,x1)]=1
         hypotheses=[]
-        # Layout anchors are calibrated from this game's regular 19px half-grid.
-        # They are hypotheses; a candidate must have actual visible dark evidence.
-        for y0 in range(141,450,19):
-            for x0 in range(54,300,19):
-                x1,y1=x0+38,y0+41;center=[x0+19,y0+20]
+        # Scale and phase follow this frame's bright cards. Grid locations are
+        # hypotheses; actual visible dark pixels and edges are still required.
+        bx0,by0,bx1,by1=config.get('board_roi',[0,0,w,h])
+        for y0 in grid_starts(fronts,1,max(2,by0),min(h-2,by1)-fh+1,scale):
+            for x0 in grid_starts(fronts,0,max(2,bx0),min(w-2,bx1)-fw+1,scale):
+                x1,y1=x0+fw,y0+fh;center=[x0+fw/2,y0+fh/2]
                 if x1>w or y1>h:continue
-                if any(np.linalg.norm(np.subtract(center,t['click_point']))<14 for t in fronts):continue
+                if any(np.linalg.norm(np.subtract(center,t['click_point']))<14*scale for t in fronts):continue
                 visible=known[y0+2:y1-2,x0+2:x1-2]==0
                 vf=float(visible.mean())
                 if not .15<vf<.92:continue
                 dark_pixels=dark[y0+2:y1-2,x0+2:x1-2]&visible
                 dark_fraction=float(dark_pixels.sum()/max(visible.sum(),1))
-                if dark_pixels.sum()<45 or dark_fraction<.22:continue
+                if dark_pixels.sum()<45*scale**2 or dark_fraction<.22:continue
                 border=[]
                 for xa,ya,xb,yb in [(x0-1,y0,x0+2,y1),(x1-2,y0,x1+1,y1),
                                     (x0,y0-1,x1,y0+2),(x0,y1-2,x1,y1+1)]:
@@ -69,11 +87,11 @@ class OcclusionBeliefs:
                 p_real=min(.96,max(.12,.10+.55*dark_fraction+.35*edge_support))
                 blockers=[]
                 for tile in fronts:
-                    rect=face(tile['click_point'])
-                    if overlap(rect,(x0,y0,x1,y1))<16:continue
+                    rect=face(tile['click_point'],scale)
+                    if overlap(rect,(x0,y0,x1,y1))<16*scale**2:continue
                     # Marginalize small localization uncertainty using a nine-point
                     # geometry prior. Scores remain uncalibrated estimates.
-                    intersections=[overlap(rect,(x0+dx,y0+dy,x1+dx,y1+dy))>20
+                    intersections=[overlap(rect,(x0+dx,y0+dy,x1+dx,y1+dy))>20*scale**2
                                    for dx,dy in itertools.product((-2,0,2),repeat=2)]
                     p=.05+.90*sum(intersections)/len(intersections)
                     blockers.append({'tile_id':tile['id'],'kind':tile['kind'],
@@ -92,7 +110,7 @@ class OcclusionBeliefs:
                                                     for other in blockers if other is not b)
                     effects.append({'remove_tile_id':b['tile_id'],'p_exposed_after':round(after,4),
                                     'marginal_exposure_gain':round(after-base,4)})
-                nearby=[hint for hint in hints if np.linalg.norm(np.subtract(hint['center'],center))<15]
+                nearby=[hint for hint in hints if np.linalg.norm(np.subtract(hint['center'],center))<15*scale]
                 kind=max(nearby,key=lambda a:a['score'])['kind_hypothesis'] if nearby else None
                 scenarios=[]
                 for bits in itertools.product((False,True),repeat=len(blockers)):
@@ -100,7 +118,7 @@ class OcclusionBeliefs:
                                           for b,bit in zip(blockers,bits))
                     scenarios.append({'above_tile_ids':[b['tile_id'] for b,bit in zip(blockers,bits) if bit],
                                       'p_conditional_on_dark_tile':round(probability,5)})
-                hypotheses.append({'id':f'D{x0}_{y0}','center':center,'face_bbox':[x0,y0,38,41],
+                hypotheses.append({'id':f'D{x0}_{y0}','center':center,'face_bbox':[x0,y0,fw,fh],
                                    'p_real_dark_tile':round(p_real,4),'kind_hypothesis':kind,
                                    'potential_blockers':blockers,'p_no_unobserved_blocker':round(p_no_other,4),
                                    'p_already_exposed':round(base,4),'removal_effects':effects,
@@ -110,21 +128,24 @@ class OcclusionBeliefs:
         hypotheses.sort(key=lambda n:-n['p_real_dark_tile'])
         return {'calibration_status':'heuristic geometric prior; NOT calibrated statistical probabilities',
                 'frame_id':state['frame_id'],
+                'board_scale':scale,
+                'grid_semantics':'phase and size fitted from visible cards; dark locations remain hypotheses',
                 'dependency_assumption':'blocker edges conditionally independent for the displayed scenario approximation',
                 'inventory_warning':'overlapping hypotheses may describe the same physical tile; do not sum them as tile count',
                 'reveal_reliability_beta':{'alpha':self.alpha,'beta':self.beta,'mean':self.alpha/(self.alpha+self.beta)},
                 'hypotheses':hypotheses[:32]}
 
     def update(self,belief,before,action,after):
+        scale=belief.get('board_scale',1.0)
         new=[t for t in after['tiles'] if not any(old['kind']==t['kind'] and
              np.linalg.norm(np.subtract(old['click_point'],t['click_point']))<8 for old in before['tiles'])]
         used=[]
         for node in sorted(belief['hypotheses'],key=lambda n:-n['p_real_dark_tile']):
             blockers=node['potential_blockers']
             if node['p_real_dark_tile']<.55 or len(blockers)!=1 or blockers[0]['tile_id']!=action['tile_id']:continue
-            if any(np.linalg.norm(np.subtract(node['center'],center))<27 for center in used):continue
+            if any(np.linalg.norm(np.subtract(node['center'],center))<27*scale for center in used):continue
             used.append(node['center'])
-            exposed=any(np.linalg.norm(np.subtract(t['click_point'],node['center']))<13 for t in new)
+            exposed=any(np.linalg.norm(np.subtract(t['click_point'],node['center']))<13*scale for t in new)
             if exposed:self.alpha+=1
             else:self.beta+=1
             self.evidence.append({'node':node['id'],'removed':action['kind'],'exposure_observed':exposed,

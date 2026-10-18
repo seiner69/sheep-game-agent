@@ -38,6 +38,10 @@ def validate_config(config):
     if not isinstance(scales, list) or not 1 <= len(scales) <= 12 or any(
             type(v) not in (int, float) or not math.isfinite(v) or not 0.2 <= v <= 4 for v in scales):
         raise ValueError('tray_scales must contain 1-12 finite numbers in [0.2, 4].')
+    board_scales = config.get('board_scales', [1.0])
+    if not isinstance(board_scales, list) or not 1 <= len(board_scales) <= 21 or any(
+            type(v) not in (int, float) or not math.isfinite(v) or not 0.5 <= v <= 2 for v in board_scales):
+        raise ValueError('board_scales must contain 1-21 finite numbers in [0.5, 2].')
     return config
 
 

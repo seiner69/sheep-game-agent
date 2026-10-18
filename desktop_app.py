@@ -88,6 +88,8 @@ def gui(config_path=None,template_dir=None):
                 append(window_status.get())
             elif e['event'] in ('reobserve','click_cancelled_window_moved'):
                 append(e['reason'])
+            elif e['event']=='board_scale_fitted':
+                append(f"牌面尺寸已适配：模板缩放 {e['scale']:.3f}，识别明牌 {e['open_tiles']} 张。")
             elif e['event']=='recognition_incomplete':
                 append(e['reason']);append('诊断截图：'+e['frame_path'])
                 try:

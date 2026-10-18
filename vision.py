@@ -67,15 +67,36 @@ def detect(image, roi, templates, *, minimum_score=.85, maximum_mae=22, scales=(
     return [t for i, t in enumerate(hits) if i not in ambiguous], len(ambiguous)
 
 
-def observe(image, config, template_dir):
+def detect_board(image, config, templates, board_scale=None):
+    """Fit artwork size independently of window DPI; do not relax color gates.
+
+    A run can reuse the fitted scale for its next frame. A new run always fits
+    again, because daily boards may use smaller tiles in the same window.
+    """
+    options = dict(minimum_score=config['minimum_score'], maximum_mae=config['maximum_mae'])
+    scales = config.get('board_scales', [1.0])
+    if board_scale is None and len(scales) > 1:
+        hits, ambiguous = detect(image, config['board_roi'], templates, scales=scales, **options)
+        if not hits:
+            return hits, ambiguous, None
+        board_scale = round(float(np.median([t['template_scale'] for t in hits])), 3)
+    if board_scale is None:
+        board_scale = scales[0]
+    # Keep nearby rounding/antialiasing variants without matching arbitrary
+    # small fragments as full-sized cards at unrelated scales.
+    local = [s for s in scales if abs(s-board_scale) <= .026] or [board_scale]
+    hits, ambiguous = detect(image, config['board_roi'], templates, scales=local, **options)
+    return hits, ambiguous, board_scale if hits else None
+
+
+def observe(image, config, template_dir, *, board_scale=None):
     if [image.shape[1], image.shape[0]] != config['frame_size']:
         raise ValueError('Window size/DPI differs from calibration. Recalibrate; coordinates must not be reused.')
     templates = {p.stem: image_read(p) for p in sorted(Path(template_dir).glob('*.png'))}
     if not templates:
         raise ValueError('No templates are installed.')
     fid = frame_id(image)
-    front, ambiguous = detect(image, config['board_roi'], templates,
-                              minimum_score=config['minimum_score'], maximum_mae=config['maximum_mae'])
+    front, ambiguous, fitted_scale = detect_board(image, config, templates, board_scale)
     front.sort(key=lambda t: (round(t['click_point'][1]/19), t['click_point'][0]))
     for n, tile in enumerate(front, 1):
         tile['id'] = f'T{n:02}'
@@ -122,6 +143,9 @@ def observe(image, config, template_dir):
                  'ambiguous_detections':tray_ambiguous,'independent_foreground_check': True,
                  'validation_status': config.get('tray_validation_status','empty tray sampled; occupied tray recognition not yet validated')},
         'tiles': front,
+        'board_geometry': {'template_scale': fitted_scale,
+                           'face_size': [round(38*(fitted_scale or 1), 2), round(41*(fitted_scale or 1), 2)],
+                           'status': 'estimated_from_template_matches' if fitted_scale else 'no_recognized_open_tiles'},
         'covered_observations': covered,
         'occlusion_edges': edges,
         'occlusion_graph_complete': False,
